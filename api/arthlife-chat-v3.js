@@ -1,280 +1,186 @@
-// Arthlife — AI Brand Chat (v3, r8)
-// Multilingual (Hindi / English / Hinglish) + Shopify product lookup + brand guard
+// Arthlife — Smart Brand Chat API (v3, AI+Multilingual upgrade)
+// Version: arthlife-chat:r8 (v3 endpoint, no new repo)
+// Uses OpenAI via fetch (no SDK) + Shopify Storefront context
 
-export default async function handler(req, res) {
-  // --- CORS ---
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;            // e.g. arthlife.in
+const STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;    // Storefront access token
+const BRAND = process.env.BRAND_NAME || "Arthlife";
 
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only", version: "r8" });
+// --- Helpers -----------------------------------------------------
 
-  try {
-    const {
-      message = "",
-      history = [] // optional chat memory from frontend
-    } = (req.body || {});
-
-    const raw = String(message || "").trim();
-    if (!raw) return res.status(400).json({ error: "message required" });
-
-    // ---------- Helpers ----------
-    const BRAND = process.env.BRAND_NAME || "Arthlife";
-    const STORE_DOMAIN = (process.env.SHOPIFY_STORE_DOMAIN || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
-    const STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN || "";
-    const OPENAI_KEY = process.env.OPENAI_API_KEY || "";
-    const TRACK_BASE = process.env.SHIPMENT_TRACK_BASE || ""; // e.g. https://www.shiprocket.in/shipment-tracking/?tracking=
-
-    const lower = raw.toLowerCase();
-
-    // --- Language detection: hindi | hinglish | english ---
-    const hasDevanagari = /[\u0900-\u097F]/.test(raw);
-    const hinglishHints = /(kya|kaise|kis|kyu|kyun|mujhe|krna|krna|bta|bataye|aap|mera|meri|kese|hota|hai|hain)\b/i.test(raw);
-    const lang = hasDevanagari ? "hi"
-               : hinglishHints ? "hinglish"
-               : "en";
-
-    // Brand guard: only allow brand-related queries
-    const GUARD = [
-      "arthlife","bracelet","gemstone","crystal","kit","bath","cleanse","aura","energy","nazuri","nazar","shubh","arambh","pouch",
-      "product","size","payment","order","deliver","delivery","replace","refund","return","exchange","status","track","tracking",
-      "dispatch","customer","support","policy","cart","checkout"
-    ];
-    const related = GUARD.some(k => lower.includes(k));
-    if (!related) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `This chat is only for ${BRAND} products & orders. Please ask about our products, orders or delivery.`,
-          `Yeh chat sirf ${BRAND} ke products aur orders ke liye hai. Kripya products, order ya delivery se judi baat puchhiye.`,
-          `Yeh chat sirf ${BRAND} ke products & orders ke liye hai. Please products/order/delivery se related hi puchho.`)
-      });
-    }
-
-    // --- Quick intents (regex) ---
-    const askTrack = /(track|where.*order|order.*where|status|kab aayega|kaha.*order)/i.test(lower);
-    const askReplace = /(replace|exchange|badal)/i.test(lower);
-    const askRefund  = /(refund|return)/i.test(lower);
-    const askPayment = /(payment|cod|cash on delivery|upi|card)/i.test(lower);
-    const askSize    = /(size|wrist|guide|measure)/i.test(lower);
-    const askCleanse = /(cleanse|charge|energ(y|ise)|sadhana|ritual)/i.test(lower);
-    const askAuth    = /(authentic|original|genuine|lab|natural)/i.test(lower);
-    const askProd    = /(product|detail|info|about|bracelet|crystal|kit|soap|sage|spray)/i.test(lower);
-
-    // Extract possible IDs
-    const orderId   = (raw.match(/\b([A-Z0-9]{6,14})\b/i) || [])[1];        // generic order ref
-    const tracking  = (raw.match(/\b([A-Z0-9]{8,20})\b/i) || [])[1];        // generic tracking ref
-    const pincode   = (raw.match(/\b([1-9][0-9]{5})\b/) || [])[1];
-
-    // --- Shopify product lookup (Storefront API) ---
-    async function searchProducts(q) {
-      if (!STOREFRONT_TOKEN || !STORE_DOMAIN) return [];
-      const endpoint = `https://${STORE_DOMAIN}/api/2024-07/graphql.json`;
-      const query = `
-        query ProductSearch($q: String!) {
-          products(first: 3, query: $q) {
-            edges {
-              node {
-                title
-                handle
-                description
-                onlineStoreUrl
-                variants(first:1){ edges{ node{ price { amount currencyCode } } } }
-              }
-            }
-          }
-        }`;
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Storefront-Access-Token": STOREFRONT_TOKEN
-        },
-        body: JSON.stringify({ query, variables: { q } })
-      });
-      const json = await resp.json().catch(() => ({}));
-      const edges = (((json || {}).data || {}).products || {}).edges || [];
-      return edges.map(e => e.node);
-    }
-
-    // --- Ready-made replies for common intents ---
-    if (askTrack) {
-      const trackLine = TRACK_BASE && tracking
-        ? (lang === "hi" ? `Agar aapke paas tracking number hai to yahan check karein: ${TRACK_BASE}${tracking}`
-           : lang === "hinglish" ? `Agar tracking no. hai to yahan check karo: ${TRACK_BASE}${tracking}`
-           : `If you have a tracking number, check here: ${TRACK_BASE}${tracking}`)
-        : "";
-
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `To track your order, open the “Track Order” section on ${BRAND}.in and enter your Order ID or email/phone. ${pincode ? `Delivery to your pincode ${pincode} usually takes 2–5 days.` : ""} ${orderId ? `We detected an ID (${orderId}). If that's your Order ID, you can use it on the tracking page.` : ""} ${trackLine}`,
-          `Order track karne ke liye ${BRAND}.in par “Track Order” section me jaakar Order ID ya email/phone daliye. ${pincode ? `Aapke pincode ${pincode} par aam taur par 2–5 din lagte hain.` : ""} ${orderId ? `Hume ek ID mili (${orderId}). Agar yeh aapka Order ID hai to tracking page par use kariye.` : ""} ${trackLine}`,
-          `Order track karne ke liye ${BRAND}.in par “Track Order” me Order ID ya email/phone dalo. ${pincode ? `Aapke pincode ${pincode} par 2–5 din lagte hain.` : ""} ${orderId ? `Yeh ID mili (${orderId}). Agar yeh Order ID hai to tracking page par daal do.` : ""} ${trackLine}`
-        ).trim()
-      });
-    }
-
-    if (askReplace) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `To start a replacement/exchange, please share your Order ID and the issue (photo if applicable). We'll guide you as per policy and create a request.`,
-          `Replacement/exchange shuru karne ke liye Order ID aur issue (photo ho to behtar) share kijiye. Policy ke mutabik turant request bana denge.`,
-          `Replacement/exchange ke liye Order ID + issue (photo ho to best) share karo. Policy ke hisaab se request bana denge.`
-        )
-      });
-    }
-
-    if (askRefund) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `For refunds/returns, please share your Order ID. We'll check eligibility as per our policy (unused & within window) and send the next steps.`,
-          `Refund/return ke liye apna Order ID share kijiye. Policy (unused & return window) ke hisaab se eligibility check karke next steps bhejenge.`,
-          `Refund/return ke liye Order ID share karo. Policy (unused & window ke andar) ke hisaab se check karke next steps bhejenge.`
-        )
-      });
-    }
-
-    if (askPayment) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `We support UPI, Cards and Netbanking. COD is available for most pincodes (limits may apply).`,
-          `UPI, Cards aur Netbanking available hai. COD adhikansh pincodes par milta hai (kuchh simaayein ho sakti hain).`,
-          `UPI, Cards & Netbanking available. COD zyada tar pincodes par milta hai (kuch limits ho sakti hain).`
-        )
-      });
-    }
-
-    if (askSize) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `Wrap a string around your wrist and mark it, measure in cm. Snug: wrist size, Comfort: +0.5–1cm, Loose: +1–1.5cm.`,
-          `Dhaaga wrist par lapet kar mark kijiye, cm me naap lijiye. Snug: wrist ke barabar, Comfort: +0.5–1cm, Loose: +1–1.5cm.`,
-          `Dhaaga wrist pe lapet ke mark karo, cm me measure karo. Snug: wrist, Comfort: +0.5–1cm, Loose: +1–1.5cm.`
-        )
-      });
-    }
-
-    if (askCleanse) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `Cleanse with salt/smoke/mist; set an intention; and recharge weekly in gentle sunlight for 2–3 minutes.`,
-          `Salt/smoke/mist se cleanse kijiye; intention set kijiye; aur hafte me ek baar 2–3 minute komal dhoop me recharge kijiye.`,
-          `Salt/smoke/mist se cleanse karo; intention set karo; aur weekly 2–3 min halki dhoop me recharge karo.`
-        )
-      });
-    }
-
-    if (askAuth) {
-      return res.json({
-        reply: chooseLang(
-          lang,
-          `Our stones are natural and lab-verified; minor colour/pattern variations are normal.`,
-          `Hamare stones natural aur lab-verified hote hain; halka colour/pattern farq normal hai.`,
-          `Hamare stones natural & lab-verified hote hain; thoda colour/pattern variation normal hota hai.`
-        )
-      });
-    }
-
-    // Product intent: try Shopify search + AI phrasing
-    if (askProd) {
-      const q = raw.replace(/(about|product|detail|info|bracelet|crystal|kit|soap|sage|spray)/ig, "").trim() || raw;
-      let items = [];
-      try { items = await searchProducts(q); } catch {}
-      if (items.length) {
-        const top = items[0];
-        const priceEdge = (((top.variants||{}).edges||[])[0]||{}).node || {};
-        const price = priceEdge.price ? `${priceEdge.price.amount} ${priceEdge.price.currencyCode}` : "";
-        const url = top.onlineStoreUrl || (top.handle ? `https://${STORE_DOMAIN}/products/${top.handle}` : "");
-
-        return res.json({
-          reply: chooseLang(
-            lang,
-            `Here’s what I found: “${top.title}” ${price ? `(${price}) ` : ""}—you can check details here: ${url}`,
-            `Yeh mila: “${top.title}” ${price ? `(${price}) ` : ""}—details yahan dekh sakte hain: ${url}`,
-            `Yeh mila: “${top.title}” ${price ? `(${price}) ` : ""}—details yahan dekh lo: ${url}`
-          )
-        });
-      }
-      // fall through to AI
-    }
-
-    // ---------- AI fallback (brand-scoped, multilingual) ----------
-    if (OPENAI_KEY) {
-      try {
-        const ai = await callOpenAI(OPENAI_KEY, makeSystemPrompt(BRAND, lang), history, raw);
-        if (ai) return res.json({ reply: ai });
-      } catch {}
-    }
-
-    // If no AI key or any failure -> safe default
-    return res.json({
-      reply: chooseLang(
-        lang,
-        `I’m your ${BRAND} Assistant. Please share your order ID or the exact product name, and I’ll help right away.`,
-        `Main ${BRAND} Assistant hoon — kripya apna Order ID ya exact product naam likhiye, main turant madad karti/karata hoon.`,
-        `${BRAND} Assistant here — order ID ya exact product name share karo, main turant help karta/karti hoon.`
-      )
-    });
-
-  } catch (err) {
-    return res.status(500).json({ error: "Internal error", details: err.message });
-  }
+// very fast language detector: Hindi chars => 'hi', else Hinglish if common words, else 'en'
+function detectLang(text) {
+  const t = String(text || "").trim();
+  if (!t) return "en";
+  if (/[\u0900-\u097F]/.test(t)) return "hi"; // devanagari => Hindi
+  if (/(^|[\s,])(kya|kyu|kyun|kaise|krna|karna|meri|mera|apna|aap|hai|hua|hoga|kaha|kidhar|id|order|return|replace|refund)([\s,.!?]|$)/i.test(t))
+    return "hing";
+  return "en";
 }
 
-/* ------------------------ Utilities ------------------------ */
-
-function chooseLang(lang, en, hi, hing) {
+function replyByLang(lang, { hi, hing, en }) {
   if (lang === "hi") return hi;
-  if (lang === "hinglish") return hing;
+  if (lang === "hing") return hing;
   return en;
 }
 
-function makeSystemPrompt(BRAND, lang) {
-  const base = `
-You are a helpful, concise chat assistant for the brand "${BRAND}".
-Answer ONLY brand-related questions (products, size, cleansing, delivery, payments, returns/exchange/refund, tracking help).
-If user asks unrelated things, politely refuse and bring focus back to ${BRAND}.
-TONE: warm, kind, spiritual guidance; short & clear sentences; no pricing promises.
-`;
-
-  const langRule =
-    lang === "hi"
-      ? "Reply in natural Hindi (Devanagari)."
-      : lang === "hinglish"
-      ? "Reply in Hinglish (Roman Hindi) — e.g., 'Aap apna order ID share kijiye, main help karunga.'"
-      : "Reply in natural English.";
-
-  return base + "\n" + langRule;
+function isBrandRelated(text) {
+  const low = text.toLowerCase();
+  const keys = [
+    "arthlife","bracelet","gemstone","kit","bath","nazuri","nazar","arambh",
+    "cleanse","soap","pouch","energy","crystal","order","delivery","refund",
+    "return","replace","payment","dispatch","customer","tracking","track","awb"
+  ];
+  return keys.some(k => low.includes(k));
 }
 
-async function callOpenAI(apiKey, systemPrompt, history, userMessage) {
-  // Minimal OpenAI Chat Completions (compatible with gpt-4o/gpt-4o-mini)
-  const body = {
-    model: "gpt-4o-mini",
-    temperature: 0.4,
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...(Array.isArray(history) ? history : []).slice(-8),
-      { role: "user", content: userMessage }
-    ]
-  };
+async function fetchShopifyProductContext(query) {
+  try {
+    if (!STORE_DOMAIN || !STOREFRONT_TOKEN) return "";
+    const gql = `
+      {
+        products(first: 3, query: "${query.replace(/"/g, '\\"')}") {
+          edges {
+            node {
+              title
+              handle
+              description
+            }
+          }
+        }
+      }
+    `;
+    const r = await fetch(`https://${STORE_DOMAIN}/api/2024-07/graphql.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Storefront-Access-Token": STOREFRONT_TOKEN
+      },
+      body: JSON.stringify({ query: gql })
+    });
+    const data = await r.json();
+    const items = data?.data?.products?.edges || [];
+    if (!items.length) return "";
+    return items
+      .map(e => {
+        const n = e.node;
+        return `• ${n.title} — ${n.description?.slice(0, 160) || ""}`.trim();
+      })
+      .join("\n")
+      .slice(0, 800);
+  } catch {
+    return "";
+  }
+}
 
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+async function openaiRespond(prompt) {
+  if (!OPENAI_API_KEY) return "";
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
+      "Authorization": `Bearer ${OPENAI_API_KEY}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      input: prompt
+    })
   });
-  const j = await r.json().catch(() => ({}));
-  const text = (((j || {}).choices || [])[0] || {}).message || {};
-  return text.content || "";
+  const j = await r.json();
+  return (j?.output_text || "").trim();
+}
+
+// --- Handler -----------------------------------------------------
+
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "POST only", version: "r8" });
+  }
+
+  try {
+    const { message = "" } = req.body || {};
+    const input = String(message || "").trim();
+    if (!input) return res.status(400).json({ error: "message required" });
+
+    const lang = detectLang(input);
+
+    // 1) Non-brand queries → polite redirect (same language)
+    if (!isBrandRelated(input)) {
+      return res.json({
+        reply: replyByLang(lang, {
+          hi: `🙏 यह चैट केवल ${BRAND} के उत्पादों और ऑर्डर्स के लिए है। कृपया ${BRAND}.in पर जाएं या अपने ऑर्डर/प्रोडक्ट से जुड़ा प्रश्न पूछें।`,
+          hing: `🙏 Ye chat sirf ${BRAND} ke products aur orders ke liye hai. Kripya ${BRAND}.in visit karein ya order/product se related sawaal poochhein.`,
+          en: `🙏 This chat is for ${BRAND} products & orders only. Please visit ${BRAND}.in or ask order/product related questions.`
+        })
+      });
+    }
+
+    const lower = input.toLowerCase();
+
+    // 2) Fast intent replies (language-aware)
+    if (/track|status|where.*order|tracking|awb/i.test(lower)) {
+      return res.json({
+        reply: replyByLang(lang, {
+          hi: "📦 ऑर्डर ट्रैक करने के लिए कृपया Arthlife.in पर ‘Track Order’ सेक्शन खोलकर अपना Order ID या Email/Phone दर्ज करें। अगर Order ID नहीं मिल रही है तो हम मदद करेंगे उसे ढूँढने में।",
+          hing: "📦 Order track karne ke liye Arthlife.in par ‘Track Order’ section me apna Order ID ya Email/Phone daliye. Agar Order ID nahi mil rahi to hum madad karenge nikalne me.",
+          en: "📦 To track your order, open the ‘Track Order’ section on Arthlife.in and enter your Order ID or Email/Phone. If you can’t find your Order ID, we’ll help retrieve it."
+        })
+      });
+    }
+
+    if (/replace|exchange|replacement/i.test(lower)) {
+      return res.json({
+        reply: replyByLang(lang, {
+          hi: "🔄 Replacement/Exchange के लिए कृपया अपना Order ID + issue (photo होने पर बेहतर) शेयर करें। हमारी टीम पॉलिसी के अनुसार request प्रोसेस कर देगी।",
+          hing: "🔄 Replacement/Exchange ke liye kripya Order ID + issue (photo ho to best) share karein. Team policy ke hisaab se request process kar degi.",
+          en: "🔄 For replacement/exchange, please share your Order ID + the issue (a photo helps). Our team will process it as per policy."
+        })
+      });
+    }
+
+    if (/refund|return/i.test(lower)) {
+      return res.json({
+        reply: replyByLang(lang, {
+          hi: "💰 Refund/Return के लिए कृपया अपना Order ID साझा करें. हम policy के अनुसार आपको पूरी guidance देंगे।",
+          hing: "💰 Refund/Return ke liye apna Order ID share karein. Hum policy ke hisaab se aapko full guidance denge.",
+          en: "💰 For refunds/returns, please share your Order ID. We’ll guide you fully as per policy."
+        })
+      });
+    }
+
+    // 3) Product/info type → AI + Shopify context (same language)
+    const shopCtx = await fetchShopifyProductContext(input);
+    const prompt = `
+You are ${BRAND}'s assistant. Tone: warm, spiritual, caring, premium yet concise.
+User language: ${lang === "hi" ? "Hindi" : lang === "hing" ? "Hinglish" : "English"}.
+Reply strictly in user's language. 2–4 short lines max.
+If order/return/replace is asked, give helpful steps. If irrelevant to ${BRAND}, say chat is only for ${BRAND} products/orders (politely).
+If product query, use the context if helpful.
+
+Context (optional):
+${shopCtx || "(no specific product context found)"}
+
+User: ${input}
+Answer:
+    `.trim();
+
+    const ai = await openaiRespond(prompt);
+    const final = ai || replyByLang(lang, {
+      hi: `🌿 मैं ${BRAND} असिस्टेंट हूँ — कृपया अपना ऑर्डर या प्रोडक्ट नाम लिखें, ताकि मैं तुरंत मदद कर सकूँ।`,
+      hing: `🌿 Main ${BRAND} Assistant hoon — kripya apna order ya product naam likhiye, taaki main turant madad kar sakoon.`,
+      en: `🌿 I’m your ${BRAND} assistant — please share your order or product name so I can help right away.`
+    });
+
+    return res.json({ reply: final, lang });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Internal error", details: err.message });
+  }
 }
