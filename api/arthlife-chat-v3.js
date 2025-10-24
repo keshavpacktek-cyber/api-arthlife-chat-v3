@@ -156,8 +156,13 @@ function normalizeQuery(q){
 }
 function tokenize(q){ return q.toLowerCase().split(/\s+/).filter(w=>w && w.length>1); }
 function buildStorefrontQuery(q){
-  const safe = q.replace(/["']/g,"");
-  return `title:'${safe}' OR tag:'${safe}' OR product_type:'${safe}' OR vendor:'${safe}'`;
+  // break into words, make each a wildcard match across title/tags/type
+  const terms = q
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(t => `title:*${t}* OR tag:*${t}* OR product_type:*${t}* OR vendor:*${t}*`);
+  return terms.join(" OR ");
 }
 function rankProducts(products, qTokens){
   const qset = new Set(qTokens);
