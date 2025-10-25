@@ -1,19 +1,17 @@
-// api/arthlife-chat-v3.js
-//
-// Arthlife — Smart Brand Chat API (v3, r13-lang+buttons)
-// Features: brand-guard, Shopify product fetch + fuzzy, intents, language auto-reply (hi/en/hinglish), quick-reply buttons.
+// Arthlife — Smart Brand Chat API (v3, r13-lang+orderid)
+// Features: brand-guard, Shopify product fetch + fuzzy, intents, language auto-reply (hi/en/hinglish)
 
 export default async function handler(req, res) {
-  // ========== CORS ==========
+  // --- CORS ---
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "POST only", version: "arthlife-chat:r13-lang+buttons" });
+    return res.status(405).json({ error: "POST only", version: "arthlife-chat:r13-lang+orderid" });
   }
 
-  // ========== ENV check (Shopify) ==========
+  // --- ENV check (Shopify) ---
   const SHOPIFY_DOMAIN   = process.env.SHOPIFY_DOMAIN;
   const STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
   const API_VER          = process.env.SHOPIFY_API_VERSION || "2024-04";
@@ -22,317 +20,303 @@ export default async function handler(req, res) {
     return res.status(500).json({
       error: "env_missing",
       note: "Set SHOPIFY_DOMAIN and SHOPIFY_STOREFRONT_TOKEN in Vercel, then redeploy.",
-      version: "arthlife-chat:r13-lang+buttons",
+      version: "arthlife-chat:r13-lang+orderid",
     });
   }
 
   try {
     const body = req.body || {};
-    const rawMessage = String(body.message || "").trim();
+    const text = String(body.message || "").trim();
     const history = Array.isArray(body.history) ? body.history : [];
-    if (!rawMessage) {
-      return res.json({ reply: "🙏 Message required.", version: "arthlife-chat:r13-lang+buttons" });
-    }
 
-    // ========== Language detection (hi / en / hi-Latn) ==========
-    const lastLang = pickLastUserLang(history) || "en";
-    const normLang = normalizeLang(body.lang || body.locale || null);
-    const lang = detectLang(rawMessage, lastLang || normLang || "en"); // stable preference
+    // ----- Language detection (hi / en / hiLatn) -----
+    const lastLang = detectLang((history[history.length - 1]?.content) || "");
+    const lang = detectLang(text, lastLang);
 
-    // ========== Intent detection ==========
-    const text = rawMessage.toLowerCase();
-    const intent = detectIntent(text);
-
-    // ========== Off-topic guard (still polite) ==========
-    if (intent === "offtopic") {
+    // ----- Brand guard: only Arthlife topics -----
+    const brandKeys = [
+      "arthlife","bracelet","stone","gem","crystal","kit","bath","nazuri","nazar","ring","energy",
+      "product","order","delivery","replace","refund","return","tracking","track","policy","payment",
+      "aura","cleanse","soap","pouch","pyrite","quartz","citrine","amethyst","tiger","tourmaline","jade","agate"
+    ];
+    const isRelated = brandKeys.some(k => text.toLowerCase().includes(k));
+    if (!isRelated) {
       return res.json({
         reply: t(lang, {
-          en: "This chat is only for Arthlife products & orders. Please ask about our products, orders, or delivery.",
-          hi: "Yeh chat sirf Arthlife ke products aur orders ke liye hai. Kripya products, orders ya delivery se judi baat puchhiye.",
-          hiLatn: "Yeh chat sirf Arthlife ke products aur orders ke liye hai. Kripya products, orders ya delivery se judi baat puchhiye.",
+          en: "This chat is only for Arthlife products & orders. Please ask about our products, orders or delivery.",
+          hi: "Ye chat sirf Arthlife ke products aur orders ke liye hai. Kripya products, orders ya delivery se judā sawal puchhiye.",
+          hiLatn: "Ye chat sirf Arthlife ke products aur orders ke liye hai. Kripya products, orders ya delivery se juda sawal puchhiye."
         }),
-        buttons: defaultButtons(lang),
-        version: "arthlife-chat:r13-lang+buttons",
+        intent: "scope",
+        version: "arthlife-chat:r13-lang+orderid"
       });
     }
 
-    // ========== Intent routing ==========
+    // ----- Intent routing -----
+    const intent = detectIntent(text);
+
     // 1) Track order
     if (intent === "track") {
       return res.json({
         reply: t(lang, {
-          en: "To track your order, open the “Track Order” section on Arthlife.in and enter your Order ID or email/phone.",
-          hi: "Apne order ko track karne ke liye Arthlife.in par 'Track Order' section me jaakar Order ID ya email/phone dijiye.",
-          hiLatn: "Order track karne ke liye Arthlife.in par 'Track Order' section me jaakar Order ID ya email/phone dijiye.",
+          en: "To track your order, open the **“Track Order”** section on Arthlife.in and enter your Order ID or email/phone.",
+          hi: "Order ko track karne ke liye Arthlife.in par **“Track Order”** section kholiye aur apna Order ID ya email/phone dijiye.",
+          hiLatn: "Order track karne ke liye Arthlife.in par **“Track Order”** kholiye aur apna Order ID ya email/phone dijiye."
         }),
         buttons: [
-          t(lang, { en: "Where is my order?", hi: "Mera order kahan hai?", hiLatn: "Mera order kahan hai?" }),
-          t(lang, { en: "Change shipping address", hi: "Shipping address badalna hai", hiLatn: "Shipping address badalna hai" }),
+          t(lang, { en: "Order ID:", hi: "Order ID:", hiLatn: "Order ID:" }),
+          t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
         ],
-        version: "arthlife-chat:r13-lang+buttons",
+        intent,
+        version: "arthlife-chat:r13-lang+orderid"
       });
     }
 
-    // 2) Replace / exchange
+    // 2) Replacement / Exchange
     if (intent === "replace") {
       return res.json({
         reply: t(lang, {
-          en: "For replacement/exchange, please email your *Order ID*, product *photos/videos* and *issue details* to *info@arthlife.in*. We’ll create the request as per our policy.",
-          hi: "Replacement/Exchange ke liye kripya apna *Order ID*, product ki *photos/videos* aur *issue details* *info@arthlife.in* par email karein. Hum policy ke hisaab se request create karenge.",
-          hiLatn: "Replacement/Exchange ke liye kripya apna *Order ID*, product ki *photos/videos* aur *issue details* *info@arthlife.in* par email karein. Hum policy ke hisaab se request create karenge.",
+          en: "For replacement/exchange, please share your **Order ID** and **issue details** (a photo helps). You can also email **info@arthlife.in** (subject: Replacement/Exchange). We’ll create the request as per policy.",
+          hi: "Replacement/Exchange ke liye kripya apna **Order ID** aur **issue details** share karein (photo ho to behtar). Aap **info@arthlife.in** par email bhi kar sakte hain (subject: Replacement/Exchange). Policy ke hisaab se request ban jayegi.",
+          hiLatn: "Replacement/Exchange ke liye kripya apna **Order ID** aur **issue details** share karein (photo ho to behtar). Aap **info@arthlife.in** par email bhi kar sakte hain (subject: Replacement/Exchange). Policy ke hisaab se request ban jayegi."
         }),
         buttons: [
+          t(lang, { en: "Order ID:", hi: "Order ID:", hiLatn: "Order ID:" }),
           t(lang, { en: "Return & refund policy", hi: "Return & refund policy", hiLatn: "Return & refund policy" }),
-          t(lang, { en: "Track my order", hi: "Order track karna hai", hiLatn: "Order track karna hai" }),
         ],
-        version: "arthlife-chat:r13-lang+buttons",
+        intent,
+        version: "arthlife-chat:r13-lang+orderid"
       });
     }
 
-    // 3) Refund / return
+    // 3) Refund / Return
     if (intent === "refund") {
       return res.json({
         reply: t(lang, {
-          en: "For refunds/returns, please email your *Order ID* with the reason and any *photos/videos* to *info@arthlife.in*. We'll guide you per policy.",
-          hi: "Refund/Return ke liye kripya apna *Order ID* reason ke saath, aur *photos/videos* *info@arthlife.in* par email karein. Hum policy ke hisaab se guide karenge.",
-          hiLatn: "Refund/Return ke liye kripya apna *Order ID* reason ke saath, aur *photos/videos* *info@arthlife.in* par email karein. Hum policy ke hisaab se guide karenge.",
+          en: "For refund/return, please share your **Order ID**, product, and reason. You may also email **info@arthlife.in** (subject: Refund/Return). We’ll guide you as per policy.",
+          hi: "Refund/Return ke liye kripya apna **Order ID**, product aur reason batayein. Aap **info@arthlife.in** par email bhi kar sakte hain (subject: Refund/Return). Hum policy ke mutabik guide karenge.",
+          hiLatn: "Refund/Return ke liye kripya apna **Order ID**, product aur reason batayein. Aap **info@arthlife.in** par email bhi kar sakte hain (subject: Refund/Return). Hum policy ke mutabik guide karenge."
         }),
         buttons: [
-          t(lang, { en: "Return & refund policy", hi: "Return & refund policy", hiLatn: "Return & refund policy" }),
-          t(lang, { en: "Need exchange instead", hi: "Exchange karna hai", hiLatn: "Exchange karna hai" }),
+          t(lang, { en: "Order ID:", hi: "Order ID:", hiLatn: "Order ID:" }),
+          t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
         ],
-        version: "arthlife-chat:r13-lang+buttons",
+        intent,
+        version: "arthlife-chat:r13-lang+orderid"
       });
     }
 
-    // 4) Product / price / details (fuzzy + Shopify)
-    if (["product", "price"].includes(intent)) {
-      const q = stripHelperWords(text); // remove words like 'price of', 'kit details', etc.
-      const product = await findClosestProduct(q, { SHOPIFY_DOMAIN, STOREFRONT_TOKEN, API_VER });
-
-      if (product) {
-        const reply = productReply(lang, product, intent);
-        const buttons = [
-          t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
-          t(lang, { en: "Need to change the shipping address", hi: "Shipping address badalna hai", hiLatn: "Shipping address badalna hai" }),
-          t(lang, { en: "Track my order", hi: "Order track karna hai", hiLatn: "Order track karna hai" }),
-        ];
+    // 3.5) Order ID — NEW
+    if (intent === "orderId") {
+      const id = extractOrderId(text);
+      if (id) {
         return res.json({
-          reply,
-          product,
-          buttons,
-          version: "arthlife-chat:r13-lang+buttons",
+          reply: t(lang, {
+            en: `Got it — Order ID **${id}**.\n\nFor **exchange/refund**, please email your *Order ID*, *issue details* and *photos/videos* to **info@arthlife.in**.\nTo **track**, open “Track Order” on Arthlife.in and enter your Order ID + email/phone.`,
+            hi: `Samajh gaya — Order ID **${id}**.\n\n**Exchange/Refund** ke liye apna *Order ID*, *issue details* aur *photos/videos* **info@arthlife.in** par email karein.\n**Tracking** ke liye Arthlife.in par “Track Order” kholkar Order ID + email/phone dijiye.`,
+            hiLatn: `Samajh gaya — Order ID **${id}**.\n\n**Exchange/Refund** ke liye apna *Order ID*, *issue details* aur *photos/videos* **info@arthlife.in** par email karein.\n**Tracking** ke liye Arthlife.in par “Track Order” kholkar Order ID + email/phone dijiye.`,
+          }),
+          buttons: [
+            t(lang, { en: "Track my order", hi: "Order track karna hai", hiLatn: "Order track karna hai" }),
+            t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
+            t(lang, { en: "Return & refund policy", hi: "Return & refund policy", hiLatn: "Return & refund policy" }),
+          ],
+          intent,
+          version: "arthlife-chat:r13-lang+orderid"
         });
       } else {
         return res.json({
           reply: t(lang, {
-            en: "I didn’t find an exact product match yet. Could you share the product name (or stone)? e.g., Rose Quartz, Citrine, Daily Bath Kit.",
-            hi: "Exact product match nahi mila. Kripya product/stone ka naam batayein, jaise — Rose Quartz, Citrine, Daily Bath Kit.",
-            hiLatn: "Exact product match nahi mila. Kripya product/stone ka naam batayein, jaise — Rose Quartz, Citrine, Daily Bath Kit.",
+            en: "Please share your Order ID (e.g., 1004 or #12345).",
+            hi: "Kripya apna Order ID batayein (jaise 1004 ya #12345).",
+            hiLatn: "Kripya apna Order ID batayein (jaise 1004 ya #12345).",
           }),
           buttons: [
-            "Rose Quartz", "Tiger Eye", "Nazuri Nazar Kit",
+            t(lang, { en: "Track my order", hi: "Order track karna hai", hiLatn: "Order track karna hai" }),
+            t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
           ],
-          version: "arthlife-chat:r13-lang+buttons",
+          intent,
+          version: "arthlife-chat:r13-lang+orderid"
         });
       }
     }
 
-    // 5) Default fallback (brand-safe)
+    // 4) Product / price (Shopify)
+    if (intent === "product" || intent === "price") {
+      const query = cleanQuery(text);
+      const prod = await searchProduct({ domain: SHOPIFY_DOMAIN, token: STOREFRONT_TOKEN, apiVersion: API_VER, q: query });
+
+      if (prod) {
+        const price = prod?.priceRange?.minVariantPrice?.amount ? `— from ${Number(prod.priceRange.minVariantPrice.amount).toFixed(0)}.0 INR.` : "";
+        const url = `https://${SHOPIFY_DOMAIN.replace(".myshopify.com","")}.in/products/${prod.handle}`;
+        const title = prod.title || "product";
+
+        return res.json({
+          reply: t(lang, {
+            en: `**${title}** ${price}\n${summaryFor(title)}\nBuy/see details: ${url}`,
+            hi: `**${title}** ${price && `— ${price.replace("from","se")}`}\n${summaryFor(title, "hi")}\nDetails: ${url}`,
+            hiLatn: `**${title}** ${price}\n${summaryFor(title, "hiLatn")}\nDetails: ${url}`,
+          }),
+          buttons: [
+            t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
+            t(lang, { en: "Order ID:", hi: "Order ID:", hiLatn: "Order ID:" }),
+          ],
+          product: { title, handle: prod.handle },
+          intent,
+          version: "arthlife-chat:r13-lang+orderid"
+        });
+      }
+
+      // Not found → ask to specify stone or product
+      return res.json({
+        reply: t(lang, {
+          en: "Didn’t find an exact product match yet. Could you share the product name (or stone)? e.g., Rose Quartz, Citrine, Daily Bath Kit.",
+          hi: "Abhi exact product match nahi mila. Kripya product/stone ka naam batayein — jaise Rose Quartz, Citrine, Daily Bath Kit.",
+          hiLatn: "Abhi exact product match nahi mila. Kripya product/stone ka naam batayein — jaise Rose Quartz, Citrine, Daily Bath Kit."
+        }),
+        intent,
+        version: "arthlife-chat:r13-lang+orderid"
+      });
+    }
+
+    // 5) Fallback
     return res.json({
       reply: t(lang, {
         en: "I’m Arthlife Assistant — please share your Order ID or the product name so I can help quickly.",
-        hi: "Main Arthlife Assistant hoon — kripya apna Order ID ya product ka naam batayein, taaki main turant sahayata kar sakoon.",
-        hiLatn: "Main Arthlife Assistant hoon — kripya apna Order ID ya product ka naam batayein, taaki main turant sahayata kar sakoon.",
+        hi: "Main Arthlife Assistant hoon — kripya apna Order ID ya product ka naam batayein, taaki main turant madad kar sakoon.",
+        hiLatn: "Main Arthlife Assistant hoon — kripya apna Order ID ya product ka naam batayein, taaki main turant madad kar sakoon."
       }),
-      buttons: defaultButtons(lang),
-      version: "arthlife-chat:r13-lang+buttons",
+      version: "arthlife-chat:r13-lang+orderid"
     });
+
   } catch (err) {
-    return res.status(500).json({
-      error: "Internal error",
-      details: err?.message || String(err),
-      version: "arthlife-chat:r13-lang+buttons",
-    });
+    return res.status(500).json({ error: "Internal error", details: err?.message || String(err), version: "arthlife-chat:r13-lang+orderid" });
   }
 }
 
-/* ========================= Helpers ========================= */
+/* ----------------- Helpers ------------------ */
 
-// Last user language from history if available
-function pickLastUserLang(history) {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const h = history[i];
-    if (h && h.role === "user" && h.lang) return normalizeLang(h.lang);
-  }
-  return null;
-}
-
-// Normalize lang token
-function normalizeLang(val) {
-  if (!val) return null;
-  const s = String(val).toLowerCase();
-  if (s.startsWith("hi-") && s.includes("latn")) return "hiLatn";
-  if (s.startsWith("hi")) return "hi";
-  return s.includes("en") ? "en" : null;
-}
-
-// Basic language detection (Devanagari / Latin + Hinglish guess)
-function detectLang(text, fallback = "en") {
+// Language detection: Hindi (Devanagari) / Hinglish (hiLatn) / English
+function detectLang(text, prefer) {
+  if (!text) return prefer || "en";
   const hasDevanagari = /[\u0900-\u097F]/.test(text);
   if (hasDevanagari) return "hi";
-  const onlyLatin = /^[\u0000-\u00ff]*$/.test(text);
-  if (onlyLatin) {
-    // If looks Hindi-ish but in Latin → Hinglish
-    if (/(kya|hai|ka|ki|ke|mera|order|kahan|price|kitna|exchange|replace|refund|nazar|pathar|patthar)/i.test(text)) {
-      return "hiLatn";
-    }
-    return "en";
-  }
-  return fallback || "en";
+  const romanHindiHints = /(hai|ka|ki|ko|kya|kripya|kripya|karna|karna hai|order|id|refund|replace|badal|nazar|kitna|price|track|status|kab)/i;
+  if (romanHindiHints.test(text)) return "hiLatn";
+  return prefer || "en";
 }
 
-// Small translator helper
-function t(lang, map) {
-  if (lang === "hi") return map.hi || map.en;
-  if (lang === "hiLatn") return map.hiLatn || map.hi || map.en;
-  return map.en;
+function t(lang, dict) {
+  return dict[lang] ?? dict.hiLatn ?? dict.hi ?? dict.en;
 }
 
-// Intent detection
+// Detect intent (with Order ID support)
 function detectIntent(text) {
-  // Off-topic quick block (sports etc.)
   if (/cricket|score|ipl|news|weather|share market|stock/i.test(text)) return "offtopic";
-
+  if (/(order\s*id|order\s*number|id)/i.test(text) || extractOrderId(text)) return "orderId";
   if (/(track|status|where.*order)/i.test(text)) return "track";
   if (/(replace|exchange|badal(na)?|replacement)/i.test(text)) return "replace";
   if (/(refund|return)/i.test(text)) return "refund";
   if (/(price|kitna|cost)/i.test(text)) return "price";
-
-  // If it mentions product-y words, treat as product
-  if (/(bracelet|stone|crystal|gem|kit|bath|nazar|nazuri|ring|bead|energy|healing|pyrite|quartz|citrine|amethyst|tiger|black tourmaline|rose quartz|jade|agate)/i.test(text)) {
-    return "product";
-  }
-  // default
-  return "product"; // prefer trying to find a product instead of rejecting
+  if (/(bracelet|stone|crystal|gem|kit|bath|nazar|nazuri|ring|bead|energy|healing|pyrite|quartz|citrine|amethyst|tiger|tourmaline|jade|agate)/i.test(text)) return "product";
+  return "product";
 }
 
-// Suggestion buttons (chips)
-function defaultButtons(lang) {
-  return [
-    t(lang, { en: "Track my order", hi: "Order track karna hai", hiLatn: "Order track karna hai" }),
-    t(lang, { en: "Need to exchange the product", hi: "Product exchange karna hai", hiLatn: "Product exchange karna hai" }),
-    t(lang, { en: "Return & refund policy", hi: "Return & refund policy", hiLatn: "Return & refund policy" }),
-  ];
+// NEW: Extract possible Order ID
+function extractOrderId(text) {
+  const m =
+    text.match(/(?:order\s*id|order\s*number|id|#)\s*[:\-]?\s*([a-z0-9\-]{3,})/i) ||
+    text.match(/\b([a-z]{2,5}-?\d{3,})\b/i) ||
+    text.match(/\b(\d{4,})\b/);
+  return m ? m[1] : null;
 }
 
-// Remove helper words before fuzzy
-function stripHelperWords(s) {
-  return s
-    .replace(/\b(price|cost|details|detail|about|kit details|ke baare me|kya|hai|ka|ki|ke|mera|mujhe|batao|please)\b/gi, " ")
+// Normalize/product query
+function cleanQuery(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s\-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// Shopify GraphQL fetch
-async function shopifyFetch({ SHOPIFY_DOMAIN, STOREFRONT_TOKEN, API_VER }, query, variables = {}) {
-  const url = `https://${SHOPIFY_DOMAIN}/api/${API_VER}/graphql.json`;
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Storefront-Access-Token": STOREFRONT_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const j = await r.json();
-  if (j.errors) throw new Error(JSON.stringify(j.errors));
-  return j.data;
+// Tiny summaries for some common stones (optional flavor)
+function summaryFor(title, lang = "en") {
+  const t = title.toLowerCase();
+  if (/rose.*quartz/.test(t)) {
+    return lang === "hi"
+      ? "Rose Quartz pyaar, daya aur bhavnaon ko samvedansheel banata hai; hriday chakra ko santhulit karta hai."
+      : lang === "hiLatn"
+      ? "Rose Quartz pyaar, daya aur emotions ko balance karta hai; heart chakra ko santhulit karta hai."
+      : "Rose Quartz brings love, compassion and harmony; nurtures emotional balance.";
+  }
+  if (/black.*tourmaline/.test(t)) {
+    return lang === "hi"
+      ? "Black Tourmaline negativity absorb karta hai aur suraksha deta hai."
+      : lang === "hiLatn"
+      ? "Black Tourmaline negativity absorb karta hai aur protection deta hai."
+      : "Black Tourmaline absorbs negativity and provides protection.";
+  }
+  if (/tiger.*eye/.test(t)) {
+    return lang === "hi"
+      ? "Tiger Eye himmat, focus aur willpower badhata hai."
+      : lang === "hiLatn"
+      ? "Tiger Eye himmat, focus aur willpower badhata hai."
+      : "Tiger Eye boosts courage, focus and willpower.";
+  }
+  return lang === "hi"
+    ? "Arthlife ka pramanit crystal. Zyada jaankari link par milegi."
+    : lang === "hiLatn"
+    ? "Arthlife ka certified crystal. Details link par milengi."
+    : "Arthlife certified crystal. See the link for full details.";
 }
 
-// Fuzzy matching (simple score)
-function fuzzyScore(a, b) {
-  a = String(a).toLowerCase();
-  b = String(b).toLowerCase();
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) return 0.92;
-  // token overlap
-  const as = a.split(/[^a-z0-9]+/).filter(Boolean);
-  const bs = b.split(/[^a-z0-9]+/).filter(Boolean);
-  const setA = new Set(as);
-  const common = bs.filter(x => setA.has(x)).length;
-  return common / Math.max(1, Math.max(as.length, bs.length));
-}
-
-// Pull some products and pick closest
-async function findClosestProduct(userQuery, env) {
-  const data = await shopifyFetch(
-    env,
-    `
-    {
-      products(first: 100) {
+// Shopify Storefront search (best-effort greedy pick)
+async function searchProduct({ domain, token, apiVersion, q }) {
+  // Build a tolerant query from user text
+  const words = q.split(/\s+/).filter(Boolean);
+  const qs = words.length ? words.slice(0, 5).join(" ") : "bracelet";
+  const gql = `
+    query Search($q:String!) {
+      products(first: 12, query: $q) {
         edges {
           node {
-            id
             title
             handle
-            description
-            priceRange { minVariantPrice { amount currencyCode } }
-            featuredImage { url }
+            productType
+            tags
+            priceRange { minVariantPrice { amount } }
           }
         }
       }
     }
-  `
-  );
+  `;
 
-  const items = (data?.products?.edges || []).map(e => e.node);
-  if (!items.length) return null;
-
-  let best = null;
-  let bestScore = 0;
-
-  for (const p of items) {
-    const candidates = [
-      p.title,
-      p.handle.replace(/-/g, " "),
-      (p.description || "").slice(0, 200),
-    ].filter(Boolean);
-
-    const score = Math.max(...candidates.map(c => fuzzyScore(c, userQuery)));
-    if (score > bestScore) {
-      bestScore = score;
-      best = p;
-    }
-  }
-
-  // Keep a decent threshold (still permissive)
-  return bestScore >= 0.35 ? best : null;
-}
-
-// Build product reply text
-function productReply(lang, product, intent) {
-  const price = product?.priceRange?.minVariantPrice;
-  const priceLine = price ? `${price.amount} ${price.currencyCode}` : "-";
-
-  const link = `https://arthlife.in/products/${product.handle}`;
-  const titleBold = `**${product.title}** — from ${priceLine}.`;
-
-  const shortBenefits = {
-    en: "Buy/see details:",
-    hi: "Buy/see details:",
-    hiLatn: "Buy/see details:",
-  };
-
-  return t(lang, {
-    en:
-      `${titleBold}\n\n` +
-      `Buy/see details: ${link}`,
-    hi:
-      `${titleBold}\n\n` +
-      `${shortBenefits.hi} ${link}`,
-    hiLatn:
-      `${titleBold}\n\n` +
-      `${shortBenefits.hiLatn} ${link}`,
+  const resp = await fetch(`https://${domain}/api/${apiVersion}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Storefront-Access-Token": token
+    },
+    body: JSON.stringify({ query: gql, variables: { q: qs } })
   });
+
+  const json = await resp.json();
+  const edges = json?.data?.products?.edges || [];
+  if (!edges.length) return null;
+
+  // Greedy rank: prefer items whose title/tag includes any keyword
+  let best = null, scoreBest = -1;
+  for (const e of edges) {
+    const n = e.node;
+    const hay = `${n.title} ${(n.tags || []).join(" ")} ${(n.productType || "")}`.toLowerCase();
+    let score = 0;
+    for (const w of words) {
+      if (hay.includes(w)) score += 2;
+      if (hay.startsWith(w)) score += 1;
+    }
+    if (score > scoreBest) { scoreBest = score; best = n; }
+  }
+  // Fallback: first
+  return best || edges[0]?.node || null;
 }
