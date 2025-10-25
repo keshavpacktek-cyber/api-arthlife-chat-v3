@@ -1,54 +1,47 @@
-// Minimal diagnostics for env + Shopify reachability
+// /api/ping.js
 export default async function handler(req, res) {
-  try {
-    const domain = process.env.SHOPIFY_DOMAIN || null;
-    const token  = process.env.SHOPIFY_STOREFRONT_TOKEN || null;
+  const domain = process.env.SHOPIFY_DOMAIN || null;
+  const token = process.env.SHOPIFY_STOREFRONT_TOKEN || null;
+  const apiVer = process.env.SHOPIFY_API_VERSION || "2024-04";
+  const gpt = !!process.env.OPENAI_API_KEY || !!process.env.OPENAI_API_KEY_1;
 
-    // Mask token in response
-    const masked = token ? token.slice(0, 6) + "…" + token.slice(-4) : null;
+  let sample_item = null;
+  let http = null;
+  let shopify_errors = null;
 
-    // If env missing -> tell us right away
-    if (!domain || !token) {
-      return res.status(200).json({
-        ok: false,
-        reason: "env_missing",
-        domain,
-        token_present: !!token,
-        note: "Set SHOPIFY_DOMAIN and SHOPIFY_STOREFRONT_TOKEN in Vercel → Settings → Environment Variables, then Redeploy."
+  if (domain && token) {
+    try {
+      const q = `
+        query { products(first: 1) {
+          edges { node { title handle priceRange { minVariantPrice { amount currencyCode } } } }
+        }}`;
+      const r = await fetch(`https://${domain}/api/${apiVer}/graphql.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Storefront-Access-Token": token,
+        },
+        body: JSON.stringify({ query: q }),
       });
+      http = r.status;
+      const j = await r.json();
+      if (j.errors) shopify_errors = j.errors;
+      const node = j?.data?.products?.edges?.[0]?.node || null;
+      if (node) sample_item = { title: node.title, handle: node.handle };
+    } catch (e) {
+      http = "fetch_failed";
+      shopify_errors = e?.message || String(e);
     }
-
-    // Try a tiny Shopify GraphQL query
-    const r = await fetch(`https://${domain}/api/2024-04/graphql.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Storefront-Access-Token": token,
-      },
-      body: JSON.stringify({
-        query: `{
-          products(first:1){ edges{ node{ title handle } } }
-        }`
-      })
-    });
-
-    const out = await r.json().catch(() => ({}));
-
-    return res.status(200).json({
-      ok: r.ok,
-      http: r.status,
-      domain,
-      token_masked: masked,
-      shopify_response_keys: Object.keys(out || {}),
-      shopify_errors: out.errors || null,
-      sample_item:
-        out?.data?.products?.edges?.[0]?.node || null
-    });
-  } catch (e) {
-    return res.status(200).json({
-      ok: false,
-      reason: "exception",
-      message: e?.message
-    });
   }
+
+  return res.json({
+    ok: !!(domain && token),
+    http,
+    domain,
+    token_masked: token ? token.slice(0, 6) + "…"+ token.slice(-4) : null,
+    gpt_present: gpt,
+    shopify_response_keys: sample_item ? ["data"] : (shopify_errors ? ["errors"] : []),
+    shopify_errors,
+    sample_item,
+  });
 }
